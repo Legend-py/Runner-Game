@@ -1,0 +1,555 @@
+<!DOCTYPE html>
+<html lang="en">
+
+<head>
+    <meta charset="UTF-8">
+    <title>RUN along life - Web Game</title>
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <style>
+        html,
+        body {
+            margin: 0;
+            padding: 0;
+            background: #222;
+        }
+
+        #gameCanvas {
+            display: block;
+            margin: 0 auto;
+            background: #f5f5f5;
+            border: 3px solid #222;
+            box-shadow: 0 0 30px #222;
+        }
+
+        #controls {
+            text-align: center;
+            margin-top: 10px;
+        }
+
+        .btn {
+            font-size: 1.2em;
+            padding: 10px 30px;
+            margin: 5px;
+            border-radius: 8px;
+            border: none;
+            background: #ff9800;
+            color: #222;
+            cursor: pointer;
+        }
+
+        #highScores {
+            color: #fff;
+            text-align: center;
+            font-size: 22px;
+            margin-bottom: 18px;
+            letter-spacing: 1px;
+        }
+
+        #usernameInput {
+            display: none;
+            margin: 10px auto;
+            text-align: center;
+        }
+
+        #usernameInput input {
+            padding: 8px;
+            font-size: 16px;
+            border-radius: 6px;
+            border: none;
+            margin-right: 10px;
+        }
+
+        #usernameInput button {
+            padding: 8px 18px;
+            font-size: 16px;
+            border-radius: 6px;
+            border: none;
+            background: #ff9800;
+            color: #222;
+            cursor: pointer;
+        }
+
+        #usernameError {
+            color: #ff0000;
+            font-size: 14px;
+            display: none;
+            margin-top: 5px;
+        }
+
+        .legend {
+            color: #222;
+            background: #ffe0b2;
+            border-radius: 8px;
+            padding: 8px 18px;
+            margin: 10px auto 18px auto;
+            width: fit-content;
+            font-size: 16px;
+            box-shadow: 0 0 10px #ff9800;
+        }
+    </style>
+</head>
+
+<body>
+    <div id="highScores"></div>
+    <div class="legend">
+        <b>Legend:</b>
+        <span style="color:#FFD700;">● Coin (+10 Score)</span> |
+        <span style="color:#4caf50;">♥ Heart (+1 Life)</span> |
+        <span style="color:#800080;">◆ Energy (+20 Energy)</span> |
+        <span style="color:#00eaff;">▭ Bonus Zone (+1 Score)</span>
+    </div>
+    <div id="usernameInput">
+        <span style="color:#fff;">New High Score! Enter your name:</span><br>
+        <input type="text" id="username" maxlength="12" placeholder="Your Name" autocomplete="off" />
+        <button id="submitName">Submit</button>
+        <div id="usernameError">Please enter a valid name (max 12 chars).</div>
+    </div>
+    <canvas id="gameCanvas" width="900" height="600"></canvas>
+    <div id="controls">
+        <button class="btn" id="jumpBtn">Jump</button>
+        <button class="btn" id="dashBtn">Dash</button>
+        <button class="btn" id="restartBtn" style="display:none;">Restart</button>
+    </div>
+    <script>
+        // --- Server ranking system (demo: jsonstore.io, replace with your own backend for production) ---
+        const RANK_URL = "https://www.jsonstore.io/runner-game-highscores";
+        let highScores = [];
+        let awaitingHighScore = false;
+        async function fetchHighScores() {
+            try {
+                let res = await fetch(RANK_URL);
+                let data = await res.json();
+                highScores = (data && data.result) ? data.result : [];
+                highScores.sort((a, b) => b.score - a.score);
+                highScores = highScores.slice(0, 3);
+                updateHighScoresDisplay();
+            } catch { highScores = []; updateHighScoresDisplay(); }
+        }
+        async function saveHighScores() {
+            await fetch(RANK_URL, { method: "POST", body: JSON.stringify(highScores) });
+        }
+        function updateHighScoresDisplay() {
+            let html = "<b>🌍 World Top Scorers</b><br>";
+            highScores.forEach((entry, i) => {
+                html += `<span style="font-weight:bold;color:${i == 0 ? '#d50000' : i == 1 ? '#1976d2' : '#388e3c'};">${i + 1}. ${entry.name} <span style="color:#ff9800;">(${entry.score})</span></span><br>`;
+            });
+            document.getElementById('highScores').innerHTML = html;
+        }
+        fetchHighScores();
+
+        // --- Game constants ---
+        const canvas = document.getElementById('gameCanvas');
+        const ctx = canvas.getContext('2d');
+        const SCREEN_WIDTH = 900, SCREEN_HEIGHT = 600, GROUND_Y = SCREEN_HEIGHT - 100;
+        let player = {
+            x: 100,
+            y: GROUND_Y - 50,
+            w: 50,
+            h: 50,
+            vy: 0,
+            vx: 0,
+            isJumping: false,
+            isDashing: false,
+            dashDuration: 0,
+            dashCooldown: 0,
+            energy: 100
+        };
+        let obstacles = [], coins = [], hearts = [], specialItems = [], bonusZones = [];
+        let obstacleSpeed = 3, itemSpeed = 3, frameCount = 0, score = 0, lives = 3, running = true;
+        let gameOver = false;
+
+        // --- Controls ---
+        document.getElementById('jumpBtn').addEventListener('touchstart', () => jump());
+        document.getElementById('dashBtn').addEventListener('touchstart', () => dash());
+        document.getElementById('jumpBtn').addEventListener('click', () => jump());
+        document.getElementById('dashBtn').addEventListener('click', () => dash());
+        document.getElementById('restartBtn').addEventListener('click', () => restartGame());
+        document.addEventListener('keydown', e => {
+            if (e.code === 'Space') jump();
+            if (e.code === 'KeyD') dash();
+            if (!running && e.code === 'KeyR') restartGame();
+        });
+
+        // --- Jump and Dash ---
+        function jump() {
+            if (!player.isJumping && running) {
+                player.vy = -15;
+                player.vx = 6; // move forward while jumping
+                player.isJumping = true;
+            }
+        }
+        function dash() {
+            if (player.energy >= 20 && player.dashCooldown === 0 && running) {
+                player.isDashing = true;
+                player.dashDuration = 70;
+                player.dashCooldown = 200;
+                player.energy -= 20;
+                score += 5;
+            }
+        }
+
+        // --- Spawning functions ---
+        function spawnObstacle() {
+            // Place obstacles in playable vertical range, avoid overlap
+            let minY = GROUND_Y - 65, maxY = GROUND_Y - 35;
+            let y = Math.floor(Math.random() * (maxY - minY)) + minY;
+            let types = ['rect', 'triangle', 'circle', 'diamond', 'star', 'hex', 'spike'];
+            let type = types[Math.floor(Math.random() * types.length)];
+            let w = 40, h = 40;
+            if (type === 'spike') { w = 40; h = 30; }
+            // Prevent obstacles from overlapping (simple check)
+            let last = obstacles.length ? obstacles[obstacles.length - 1] : null;
+            let x = SCREEN_WIDTH + Math.random() * 60;
+            if (last && Math.abs(last.x - x) < 60) x += 60;
+            obstacles.push({ x, y, w, h, type });
+        }
+        function spawnCoin() {
+            let minY = GROUND_Y - 110, maxY = GROUND_Y - 50;
+            let y = Math.floor(Math.random() * (maxY - minY)) + minY;
+            coins.push({ x: SCREEN_WIDTH + Math.random() * 80, y, w: 20, h: 20 });
+        }
+        function spawnHeart() {
+            let minY = GROUND_Y - 130, maxY = GROUND_Y - 70;
+            let y = Math.floor(Math.random() * (maxY - minY)) + minY;
+            hearts.push({ x: SCREEN_WIDTH + Math.random() * 80, y, w: 30, h: 30 });
+        }
+        function spawnSpecialItem() {
+            let minY = GROUND_Y - 110, maxY = GROUND_Y - 50;
+            let y = Math.floor(Math.random() * (maxY - minY)) + minY;
+            specialItems.push({ x: SCREEN_WIDTH + Math.random() * 80, y, w: 30, h: 30 });
+        }
+        function spawnBonusZone() {
+            let y = GROUND_Y - 60;
+            bonusZones.push({ x: SCREEN_WIDTH + Math.random() * 80, y, w: 200, h: 40 });
+        }
+
+        // --- Move objects ---
+        function moveObjects() {
+            let speedBoost = player.isDashing ? 6 : 0;
+            obstacles.forEach(o => o.x -= (obstacleSpeed + speedBoost));
+            coins.forEach(c => c.x -= (itemSpeed + speedBoost));
+            hearts.forEach(h => h.x -= (itemSpeed + speedBoost));
+            specialItems.forEach(s => s.x -= (itemSpeed + speedBoost));
+            bonusZones.forEach(b => b.x -= (itemSpeed + speedBoost));
+            obstacles = obstacles.filter(o => o.x + o.w > 0);
+            coins = coins.filter(c => c.x + c.w > 0);
+            hearts = hearts.filter(h => h.x + h.w > 0);
+            specialItems = specialItems.filter(s => s.x + s.w > 0);
+            bonusZones = bonusZones.filter(b => b.x + b.w > 0);
+        }
+
+        // --- Collision detection ---
+        function rectsCollide(a, b) {
+            return a.x < b.x + b.w && a.x + a.w > b.x && a.y < b.y + b.h && a.y + a.h > b.y;
+        }
+        function checkCollisions() {
+            for (let o of obstacles) {
+                if (rectsCollide(player, o) && !player.isDashing) {
+                    lives--;
+                    obstacles = obstacles.filter(ob => ob !== o);
+                    if (lives <= 0) running = false;
+                }
+            }
+            for (let c of coins) {
+                if (rectsCollide(player, c)) {
+                    score += 10;
+                    coins = coins.filter(coin => coin !== c);
+                }
+            }
+            for (let h of hearts) {
+                if (rectsCollide(player, h)) {
+                    lives = Math.min(lives + 1, 3);
+                    hearts = hearts.filter(heart => heart !== h);
+                }
+            }
+            for (let s of specialItems) {
+                if (rectsCollide(player, s)) {
+                    player.energy = Math.min(player.energy + 20, 100);
+                    specialItems = specialItems.filter(item => item !== s);
+                }
+            }
+            for (let b of bonusZones) {
+                if (rectsCollide(player, b)) {
+                    score += 1;
+                }
+            }
+        }
+
+        // --- Draw everything ---
+        function drawGame() {
+            ctx.clearRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+            // Sky gradient
+            let grad = ctx.createLinearGradient(0, 0, 0, SCREEN_HEIGHT);
+            grad.addColorStop(0, "#e3f2fd");
+            grad.addColorStop(1, "#fffde7");
+            ctx.fillStyle = grad;
+            ctx.fillRect(0, 0, SCREEN_WIDTH, SCREEN_HEIGHT);
+
+            // Ground with grass
+            ctx.fillStyle = "#388e3c";
+            ctx.fillRect(0, GROUND_Y, SCREEN_WIDTH, 20);
+            ctx.fillStyle = "#222";
+            ctx.fillRect(0, GROUND_Y + 20, SCREEN_WIDTH, SCREEN_HEIGHT - GROUND_Y - 20);
+
+            // Player (circle with shadow)
+            ctx.save();
+            ctx.shadowColor = player.isDashing ? "#ff9800" : "#1976d2";
+            ctx.shadowBlur = player.isDashing ? 30 : 10;
+            ctx.beginPath();
+            ctx.arc(player.x + player.w / 2, player.y + player.h / 2, player.w / 2, 0, Math.PI * 2);
+            ctx.fillStyle = player.isDashing ? "#ff9800" : "#1976d2";
+            ctx.fill();
+            ctx.restore();
+
+            // Obstacles (all red, but keep shapes for variety)
+            obstacles.forEach(o => {
+                ctx.save();
+                ctx.shadowBlur = 10;
+                ctx.shadowColor = "#d50000";
+                ctx.fillStyle = "#d50000";
+                if (o.type === 'rect') {
+                    ctx.fillRect(o.x, o.y, o.w, o.h);
+                } else if (o.type === 'triangle') {
+                    ctx.beginPath();
+                    ctx.moveTo(o.x + o.w / 2, o.y);
+                    ctx.lineTo(o.x + o.w, o.y + o.h);
+                    ctx.lineTo(o.x, o.y + o.h);
+                    ctx.closePath();
+                    ctx.fill();
+                } else if (o.type === 'circle') {
+                    ctx.beginPath();
+                    ctx.arc(o.x + o.w / 2, o.y + o.h / 2, o.w / 2, 0, Math.PI * 2);
+                    ctx.fill();
+                } else if (o.type === 'diamond') {
+                    ctx.beginPath();
+                    ctx.moveTo(o.x + o.w / 2, o.y);
+                    ctx.lineTo(o.x + o.w, o.y + o.h / 2);
+                    ctx.lineTo(o.x + o.w / 2, o.y + o.h);
+                    ctx.lineTo(o.x, o.y + o.h / 2);
+                    ctx.closePath();
+                    ctx.fill();
+                } else if (o.type === 'star') {
+                    drawStar(ctx, o.x + o.w / 2, o.y + o.h / 2, o.w / 2, o.w / 4, 5);
+                } else if (o.type === 'hex') {
+                    drawHex(ctx, o.x + o.w / 2, o.y + o.h / 2, o.w / 2);
+                } else if (o.type === 'spike') {
+                    drawSpike(ctx, o.x, o.y, o.w, o.h);
+                }
+                ctx.restore();
+            });
+
+            // Coins
+            coins.forEach(c => {
+                ctx.save();
+                ctx.shadowColor = "#FFD700";
+                ctx.shadowBlur = 10;
+                ctx.fillStyle = "#FFD700";
+                ctx.beginPath();
+                ctx.arc(c.x + c.w / 2, c.y + c.h / 2, c.w / 2, 0, Math.PI * 2);
+                ctx.fill();
+                ctx.restore();
+            });
+            // Hearts
+            hearts.forEach(h => {
+                ctx.save();
+                ctx.shadowColor = "#4caf50";
+                ctx.shadowBlur = 10;
+                ctx.fillStyle = "#4caf50";
+                ctx.beginPath();
+                ctx.arc(h.x + h.w / 4, h.y + h.h / 2, h.w / 4, 0, Math.PI, false);
+                ctx.arc(h.x + 3 * h.w / 4, h.y + h.h / 2, h.w / 4, 0, Math.PI, false);
+                ctx.lineTo(h.x + h.w / 2, h.y + h.h);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            });
+            // Special items (purple diamonds)
+            specialItems.forEach(s => {
+                ctx.save();
+                ctx.shadowColor = "#800080";
+                ctx.shadowBlur = 10;
+                ctx.fillStyle = "#800080";
+                ctx.beginPath();
+                ctx.moveTo(s.x + s.w / 2, s.y);
+                ctx.lineTo(s.x + s.w, s.y + s.h / 2);
+                ctx.lineTo(s.x + s.w / 2, s.y + s.h);
+                ctx.lineTo(s.x, s.y + s.h / 2);
+                ctx.closePath();
+                ctx.fill();
+                ctx.restore();
+            });
+            // Bonus zones (cyan rectangles)
+            bonusZones.forEach(b => {
+                ctx.save();
+                ctx.globalAlpha = 0.3;
+                ctx.fillStyle = "#00eaff";
+                ctx.fillRect(b.x, b.y, b.w, b.h);
+                ctx.restore();
+            });
+
+            // Score, lives, energy, cooldown
+            ctx.fillStyle = "#222";
+            ctx.font = "bold 28px Arial";
+            ctx.fillText("Score: " + score, 20, 40);
+            ctx.fillText("Lives: " + lives, 20, 80);
+            ctx.fillText("Energy: " + player.energy + "%", 20, 120);
+            if (player.dashCooldown > 0) {
+                ctx.fillStyle = "#ff9800";
+                ctx.fillText("Dash Cooldown: " + Math.ceil(player.dashCooldown / 30) + "s", 20, 160);
+            }
+            if (!running) {
+                ctx.fillStyle = "#d50000";
+                ctx.font = "bold 60px Arial";
+                ctx.fillText("GAME OVER!", SCREEN_WIDTH / 2 - 200, SCREEN_HEIGHT / 2 - 50);
+                ctx.font = "bold 32px Arial";
+                ctx.fillStyle = "#222";
+                ctx.fillText("Final Score: " + score, SCREEN_WIDTH / 2 - 120, SCREEN_HEIGHT / 2 + 10);
+                ctx.fillText("Press R or tap Restart", SCREEN_WIDTH / 2 - 140, SCREEN_HEIGHT / 2 + 50);
+                document.getElementById('restartBtn').style.display = 'inline-block';
+                if (!awaitingHighScore) checkHighScore(score);
+            }
+        }
+        function drawStar(ctx, cx, cy, outer, inner, points) {
+            let rot = Math.PI / 2 * 3;
+            let x = cx, y = cy;
+            let step = Math.PI / points;
+            ctx.beginPath();
+            ctx.moveTo(cx, cy - outer);
+            for (let i = 0; i < points; i++) {
+                x = cx + Math.cos(rot) * outer;
+                y = cy + Math.sin(rot) * outer;
+                ctx.lineTo(x, y);
+                rot += step;
+                x = cx + Math.cos(rot) * inner;
+                y = cy + Math.sin(rot) * inner;
+                ctx.lineTo(x, y);
+                rot += step;
+            }
+            ctx.lineTo(cx, cy - outer);
+            ctx.closePath();
+            ctx.fill();
+        }
+        function drawHex(ctx, cx, cy, r) {
+            ctx.beginPath();
+            for (let i = 0; i < 6; i++) {
+                let angle = Math.PI / 3 * i;
+                let x = cx + Math.cos(angle) * r;
+                let y = cy + Math.sin(angle) * r;
+                if (i === 0) ctx.moveTo(x, y);
+                else ctx.lineTo(x, y);
+            }
+            ctx.closePath();
+            ctx.fill();
+        }
+        function drawSpike(ctx, x, y, w, h) {
+            ctx.beginPath();
+            ctx.moveTo(x, y + h);
+            ctx.lineTo(x + w / 2, y);
+            ctx.lineTo(x + w, y + h);
+            ctx.closePath();
+            ctx.fill();
+        }
+
+        // --- Game loop ---
+        function gameLoop() {
+            if (running) {
+                player.y += player.vy;
+                if (player.isJumping) player.vx = 5;
+                else player.vx = 0;
+                player.x += player.vx;
+                player.vy += 1;
+                if (player.y >= GROUND_Y - player.h) {
+                    player.y = GROUND_Y - player.h;
+                    player.isJumping = false;
+                    player.vx = 0;
+                }
+                if (player.x < 100) player.x = 100;
+                if (player.x > 300) player.x = 300;
+
+                if (player.isDashing) player.dashDuration--;
+                if (player.dashDuration <= 0) player.isDashing = false;
+                if (player.dashCooldown > 0) player.dashCooldown--;
+
+                // Spawn objects (keep spawn rate consistent after high score/game over)
+                if (frameCount % 120 === 0) spawnObstacle();
+                if (frameCount % 200 === 0) spawnCoin();
+                if (frameCount % 500 === 0) spawnHeart();
+                if (frameCount % 300 === 0) spawnSpecialItem();
+                if (frameCount % 500 === 0) spawnBonusZone();
+
+                // Difficulty scaling (easy at start, harder over time)
+                if (frameCount % 600 === 0 && obstacleSpeed < 15) {
+                    obstacleSpeed += 1;
+                    itemSpeed += 1;
+                }
+                if (score >= 100) { obstacleSpeed = Math.max(obstacleSpeed, 6); itemSpeed = Math.max(itemSpeed, 6); }
+                if (score >= 200) { obstacleSpeed = Math.max(obstacleSpeed, 7); itemSpeed = Math.max(itemSpeed, 7); }
+                if (score >= 300) { obstacleSpeed = Math.max(obstacleSpeed, 10); itemSpeed = Math.max(itemSpeed, 10); }
+                if (score >= 400) { obstacleSpeed = Math.max(obstacleSpeed, 15); itemSpeed = Math.max(itemSpeed, 15); }
+                if (score >= 500) { obstacleSpeed = Math.max(obstacleSpeed, 25); itemSpeed = Math.max(itemSpeed, 25); }
+                if (score >= 600) running = false;
+
+                moveObjects();
+                checkCollisions();
+            }
+            drawGame();
+            frameCount++;
+            requestAnimationFrame(gameLoop);
+        }
+        gameLoop();
+
+        // --- Ranking system ---
+        function checkHighScore(newScore) {
+            let minScore = highScores.length < 3 ? 0 : highScores[2].score;
+            if (newScore > minScore || highScores.length < 3) {
+                awaitingHighScore = true;
+                document.getElementById('usernameInput').style.display = 'block';
+                document.getElementById('username').focus();
+            }
+        }
+        document.getElementById('submitName').onclick = async function () {
+            let name = document.getElementById('username').value.trim();
+            if (!name || name.length > 12) {
+                document.getElementById('usernameError').style.display = 'block';
+                return;
+            }
+            document.getElementById('usernameError').style.display = 'none';
+            highScores.push({ name, score });
+            highScores.sort((a, b) => b.score - a.score);
+            highScores = highScores.slice(0, 3);
+            await saveHighScores();
+            updateHighScoresDisplay();
+            document.getElementById('usernameInput').style.display = 'none';
+            document.getElementById('username').value = '';
+            awaitingHighScore = false;
+        };
+
+        // --- Restart ---
+        function restartGame() {
+            obstacles = [];
+            coins = [];
+            hearts = [];
+            specialItems = [];
+            bonusZones = [];
+            obstacleSpeed = 3;
+            itemSpeed = 3;
+            frameCount = 0;
+            score = 0;
+            lives = 3;
+            player.energy = 100;
+            player.isJumping = false;
+            player.isDashing = false;
+            player.dashDuration = 0;
+            player.dashCooldown = 0;
+            player.x = 100;
+            player.y = GROUND_Y - 50;
+            running = true;
+            gameOver = false;
+            awaitingHighScore = false;
+            document.getElementById('restartBtn').style.display = 'none';
+            fetchHighScores();
+        }
+    </script>
+</body>
+
+</html>
