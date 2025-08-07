@@ -1,0 +1,20 @@
+{
+  "name": "simple-html5-game",
+  "version": "1.0.0",
+  "description": "A simple HTML5 game that can be played on mobile devices.",
+  "main": "src/game.js",
+  "scripts": {
+    "start": "live-server src"
+  },
+  "keywords": [
+    "html5",
+    "game",
+    "mobile"
+  ],
+  "author": "Your Name",
+  "license": "MIT",
+  "dependencies": {},
+  "devDependencies": {
+    "live-server": "^1.2.1"
+  }
+}
